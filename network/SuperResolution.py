@@ -1,4 +1,5 @@
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
+tf.disable_v2_behavior()
 from layers import conv1d, highwaynet, deconv
 
 #gets mel as input (time/reduction factor) and spits out the upsampled meg 

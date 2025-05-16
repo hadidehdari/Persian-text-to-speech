@@ -1,4 +1,5 @@
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
+tf.disable_v2_behavior()
 
 #https://www.w3cschool.cn/doc_tensorflow_python/tensorflow_python-tf-layers-conv1d.html
 '''He initialization is implemented in variance_scaling_initializer(), but it didnt work for me (loss keeps blowing up) so i used Xavier initialization.i found the following questions useful:

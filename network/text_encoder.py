@@ -1,4 +1,5 @@
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
+tf.disable_v2_behavior()
 from layers import conv1d,highwaynet
 
 def embeding_layer(inputtextids,vocab_size,emdeding_size,scope_name,padding=False):
