@@ -65,8 +65,12 @@ class HighwayLayer(tf.keras.layers.Layer):
         self.activation = activation
         self.dropout_rate = dropout_rate
         
+        # اگر filters مشخص نشده باشد، از مقدار پیش‌فرض استفاده می‌کنیم
+        if self.filters is None:
+            self.filters = 256  # مقدار پیش‌فرض
+            
         self.conv = Conv1DLayer(
-            filters=2*filters,
+            filters=2*self.filters,  # ضرب در 2 برای تقسیم به H1 و H2
             kernel_size=kernel_size,
             strides=strides,
             padding=padding,
@@ -84,6 +88,16 @@ class HighwayLayer(tf.keras.layers.Layer):
         # اگر filters مشخص نشده باشد، از اندازه ورودی استفاده می‌کنیم
         if self.filters is None:
             self.filters = inputs.get_shape().as_list()[-1]
+            # به‌روزرسانی conv با filters جدید
+            self.conv = Conv1DLayer(
+                filters=2*self.filters,
+                kernel_size=self.kernel_size,
+                strides=self.strides,
+                padding=self.padding,
+                dilation_rate=self.dilation_rate,
+                activation=self.activation,
+                dropout_rate=self.dropout_rate
+            )
             
         x = self.conv(inputs, training=training)
         
