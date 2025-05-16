@@ -1,160 +1,148 @@
-import tensorflow.compat.v1 as tf
-tf.disable_v2_behavior()
-from layers import conv1d, highwaynet, deconv
+import tensorflow as tf
+from layers import Conv1DLayer, HighwayLayer, DeconvLayer
 
-#gets mel as input (time/reduction factor) and spits out the upsampled meg 
-def super_resolution(input_tensor, dropout_rate, num_hidden_layers, n_fft):
-    L1 = conv1d(input_tensor=input_tensor,
+class SuperResolution(tf.keras.layers.Layer):
+    def __init__(self, num_hidden_layers, n_fft, dropout_rate=0.5, name="super_resolution"):
+        super().__init__(name=name)
+        self.num_hidden_layers = num_hidden_layers
+        self.n_fft = n_fft
+        self.dropout_rate = dropout_rate
+        
+        # تعریف لایه کانولوشن اول
+        self.conv1 = Conv1DLayer(
+            filters=num_hidden_layers,
+            kernel_size=1,
+            strides=1,
+            padding="SAME",
+            dilation_rate=1,
+            activation=None,
+            dropout_rate=dropout_rate,
+            name="conv1"
+        )
+        
+        # تعریف لایه‌های highway
+        self.highway_layers = []
+        for i in range(8):
+            dilation_rate = 1 if i % 4 == 0 else (3 if i % 4 == 1 else (9 if i % 4 == 2 else 27))
+            self.highway_layers.append(
+                HighwayLayer(
+                    filters=None,
+                    kernel_size=3,
+                    strides=1,
+                    padding="SAME",
+                    dilation_rate=dilation_rate,
+                    activation=None,
+                    dropout_rate=dropout_rate,
+                    name=f"highway_{i+1}"
+                )
+            )
+        
+        # تعریف لایه‌های deconv
+        self.deconv_layers = []
+        for i in range(2):
+            self.deconv_layers.append(
+                DeconvLayer(
+                    filters=num_hidden_layers,
+                    kernel_size=3,
+                    strides=2,
+                    padding="SAME",
+                    activation=None,
+                    dropout_rate=dropout_rate,
+                    name=f"deconv_{i+1}"
+                )
+            )
+        
+        # لایه‌های کانولوشن نهایی
+        self.final_convs = [
+            Conv1DLayer(
+                filters=2*num_hidden_layers,
+                kernel_size=1,
+                strides=1,
+                padding="SAME",
+                activation=None,
+                dropout_rate=dropout_rate,
+                name="final_conv1"
+            ),
+            Conv1DLayer(
+                filters=1+n_fft//2,
+                kernel_size=1,
+                strides=1,
+                padding="SAME",
+                activation=None,
+                dropout_rate=dropout_rate,
+                name="final_conv2"
+            ),
+            Conv1DLayer(
                 filters=num_hidden_layers,
                 kernel_size=1,
                 strides=1,
                 padding="SAME",
-                dilation_rate=1,
+                activation=tf.nn.relu,
+                dropout_rate=dropout_rate,
+                name="final_conv3"
+            ),
+            Conv1DLayer(
+                filters=num_hidden_layers,
+                kernel_size=1,
+                strides=1,
+                padding="SAME",
+                activation=tf.nn.relu,
+                dropout_rate=dropout_rate,
+                name="final_conv4"
+            ),
+            Conv1DLayer(
+                filters=num_hidden_layers,
+                kernel_size=1,
+                strides=1,
+                padding="SAME",
                 activation=None,
-                dropout_rate=dropout_rate)
+                dropout_rate=dropout_rate,
+                name="final_conv5"
+            )
+        ]
+        
+        # لایه‌های نرمال‌سازی و dropout
+        self.layer_norm = tf.keras.layers.LayerNormalization(axis=-1)
+        self.dropout = tf.keras.layers.Dropout(dropout_rate)
+        
+    def call(self, inputs, training=False):
+        # لایه کانولوشن اول
+        x = self.conv1(inputs, training=training)
+        
+        # لایه‌های highway اول
+        for i in range(2):
+            x = self.highway_layers[i](x, training=training)
+        
+        # لایه deconv اول
+        x = self.deconv_layers[0](x, training=training)
+        
+        # لایه‌های highway دوم
+        for i in range(2, 4):
+            x = self.highway_layers[i](x, training=training)
+        
+        # لایه deconv دوم
+        x = self.deconv_layers[1](x, training=training)
+        
+        # لایه‌های highway سوم
+        for i in range(4, 6):
+            x = self.highway_layers[i](x, training=training)
+        
+        # لایه‌های کانولوشن نهایی
+        for conv in self.final_convs:
+            x = conv(x, training=training)
+        
+        Z = tf.nn.sigmoid(x)
+        
+        return x, Z
 
-    L2 = highwaynet(input_tensor=L1,
-                    filters=None,
-                    kernel_size=3,
-                    strides=1,
-                    padding="SAME",
-                    dilation_rate=1,
-                    activation=None,
-                    dropout_rate=dropout_rate,
-                    scope_name="SRNET_highwaynet_Block1")
-                    
-    L3 = highwaynet(input_tensor=L2,
-                    filters=None,
-                    kernel_size=3,
-                    strides=1,
-                    padding="SAME",
-                    dilation_rate=3,
-                    activation=None,
-                    dropout_rate=dropout_rate,
-                    scope_name="SRNET_highwaynet_Block2")
-    
-    L4 = deconv(input_tensor=L3,
-                filters=None,
-                kernel_size=3,
-                strides=2,
-                padding='SAME',
-                activation=None,
-                dropout_rate=dropout_rate)    
-                
-    L5 = highwaynet(input_tensor=L4,
-                    filters=None,
-                    kernel_size=3,
-                    strides=1,
-                    padding="SAME",
-                    dilation_rate=1,
-                    activation=None,
-                    dropout_rate=dropout_rate,
-                    scope_name="SRNET_highwaynet_Layer2_3")
-                    
-    L6 = highwaynet(input_tensor=L5,
-                    filters=None,
-                    kernel_size=3,
-                    strides=1,
-                    padding="SAME",
-                    dilation_rate=3,
-                    activation=None,
-                    dropout_rate=dropout_rate,
-                    scope_name="SRNET_highwaynet_Layer2_1_4")
-        
-    L7 = deconv(input_tensor=L6,
-                filters=None,
-                kernel_size=3,
-                strides=2,
-                padding='SAME',
-                activation=None,
-                dropout_rate=dropout_rate)    
-                
-    L8 = highwaynet(input_tensor=L7,
-                    filters=None,
-                    kernel_size=3,
-                    strides=1,
-                    padding="SAME",
-                    dilation_rate=1,
-                    activation=None,
-                    dropout_rate=dropout_rate,
-                    scope_name="SRNET_highwaynet_Layer2_5")
-                    
-    L9 = highwaynet(input_tensor=L8,
-                    filters=None,
-                    kernel_size=3,
-                    strides=1,
-                    padding="SAME",
-                    dilation_rate=3,
-                    activation=None,
-                    dropout_rate=dropout_rate,
-                    scope_name="SRNET_highwaynet_Layer2_1_6")
-        
-    L10 = conv1d(input_tensor=L9,
-                 filters=2*num_hidden_layers,
-                 kernel_size=1,
-                 strides=1,
-                 padding="SAME",
-                 dilation_rate=1,
-                 activation=None,
-                 dropout_rate=dropout_rate)
-        
-    L11 = highwaynet(input_tensor=L10,
-                     filters=None,
-                     kernel_size=3,
-                     strides=1,
-                     padding="SAME",
-                     dilation_rate=1,
-                     activation=None,
-                     dropout_rate=dropout_rate,
-                     scope_name="SRNET_highwaynet_Block7")
-    
-    L12 = highwaynet(input_tensor=L11,
-                     filters=None,
-                     kernel_size=3,
-                     strides=1,
-                     padding="SAME",
-                     dilation_rate=1,
-                     activation=None,
-                     dropout_rate=dropout_rate,
-                     scope_name="SRNET_highwaynet_Block8")
-        
-    L13 = conv1d(input_tensor=L12,
-                 filters=1+n_fft//2,
-                 kernel_size=1,
-                 strides=1,
-                 padding="SAME",
-                 dilation_rate=1,
-                 activation=None,
-                 dropout_rate=dropout_rate)
-    
-    L14 = conv1d(input_tensor=L13,
-                 filters=None,
-                 kernel_size=1,
-                 strides=1,
-                 padding="SAME",
-                 dilation_rate=1,
-                 activation=tf.nn.relu,
-                 dropout_rate=dropout_rate)
-                 
-    L15 = conv1d(input_tensor=L14,
-                 filters=None,
-                 kernel_size=1,
-                 strides=1,
-                 padding="SAME",
-                 dilation_rate=1,
-                 activation=tf.nn.relu,
-                 dropout_rate=dropout_rate)
-       
-    logits = conv1d(input_tensor=L15,
-                    filters=None,
-                    kernel_size=1,
-                    strides=1,
-                    padding="SAME",
-                    dilation_rate=1,
-                    activation=None,
-                    dropout_rate=dropout_rate)
-    
-    Z = tf.nn.sigmoid(logits)
-
-    return logits, Z
+def super_resolution(input_tensor, dropout_rate, num_hidden_layers, n_fft):
+    """
+    تابع سازگاری برای حفظ رابط قدیمی
+    """
+    sr = SuperResolution(
+        num_hidden_layers=num_hidden_layers,
+        n_fft=n_fft,
+        dropout_rate=dropout_rate
+    )
+    return sr(input_tensor, training=True)
     

@@ -1,24 +1,15 @@
 import sys
-import tensorflow.compat.v1 as tf
+import tensorflow as tf
 import numpy as np
 from tqdm import tqdm
 from scipy.io.wavfile import write
 
-# فعال‌سازی ایمن eager execution برای TF1 یا عبور در TF2
-try:
-    tf.enable_eager_execution()
-except AttributeError:
-    pass
-
-# اگر کدهای TF1 هست، باید compat.v1 را فعال کنیم
-tf.disable_v2_behavior()
-
 sys.path.append('tools')
 sys.path.append('network')
 
-from read_data import load_data_main,get_batch,get_batch_npz
+from read_data import load_data_main, get_batch, get_batch_npz
 from hp import HP
-from text_encoder import textencoder,embeding_layer
+from text_encoder import textencoder, embeding_layer
 from audio_encoder import audioencoder
 from audio_decoder import audiodecoder
 from attention import attention
@@ -26,143 +17,141 @@ from SuperResolution import super_resolution
 from read_data import load_data_synthesize
 from wavprepro import spectrogram2wav
 
-class model(object):
-    def __init__(self, data_path, mode):
-        # تعریف session با compat.v1.Session
-        self.sess = tf.Session()
+class TextToSpeechModel(tf.keras.Model):
+    def __init__(self, HP, mode='demo'):
+        super().__init__()
+        self.HP = HP
+        self.mode = mode
+        
+        # تعریف لایه‌های مدل
+        self.embedding_layer = tf.keras.layers.Embedding(
+            input_dim=len(self.HP.persianvocab),
+            output_dim=self.HP.embeding_num_units,
+            name="embedding"
+        )
+        
+        # تعریف بهینه‌ساز
+        self.optimizer = tf.keras.optimizers.Adam(
+            learning_rate=self.HP.init_learinig_rate,
+            beta_1=0.6,
+            beta_2=0.95
+        )
+        
+        # تعریف متغیر global_step
+        self.global_step = tf.Variable(0, name='global_step', trainable=False)
 
-        if mode=='training_superresolution':
-            self.mels, self.mags, self.fnames, self.num_batch = get_batch_npz(data_path,
-                                                                           'metadata.csv',HP.batch_size,HP.n_mels,HP.n_fft,mode=1)
+    @tf.function
+    def call(self, inputs, training=False):
+        if self.mode == 'training_text2sp':
+            texts, mels = inputs
+            # پیش‌پردازش ورودی‌ها
+            embedded_text = self.embedding_layer(texts)
+            shifted_mels = tf.pad(mels[:,:-1,:], [[0,0], [1,0], [0,0]])
             
-            with tf.name_scope('Super_Resolution_Network'):
-                self.logits, self.Z = super_resolution(input_tensor=self.mels,dropout_rate=
-                                                    HP.dropout_rate,num_hidden_layers=HP.c,n_fft=HP.n_fft)
-                
-        if mode=='training_text2sp':
-            self.texts, self.mels, self.fnames, self.num_batch = get_batch_npz(data_path,
-                                                                                  'metadata.csv',HP.batch_size,HP.n_mels,HP.n_fft,mode=2)
-            self.L = embeding_layer(inputtextids=self.texts,emdeding_size=HP.embeding_num_units,
-                             vocab_size=len(HP.persianvocab),scope_name="embeding")
-            #one preview shifted target input
-            self.S = tf.pad(self.mels[:,:-1,:],[[0,0],[1,0],[0,0]])
-
-            with tf.name_scope("Text_Encoder"):
-                self.K, self.V = textencoder(embeding_tensor=self.L,dropout_rate=HP.dropout_rate,num_hidden_layers=HP.d)
+            # کدگذاری متن
+            K, V = textencoder(embedded_text, dropout_rate=self.HP.dropout_rate, 
+                             num_hidden_layers=self.HP.d)
             
-            with tf.name_scope("Audio_Encoder"):
-                self.Q = audioencoder(input_tensor=self.S,dropout_rate=HP.dropout_rate,num_hidden_layers=HP.d)
+            # کدگذاری صوت
+            Q = audioencoder(shifted_mels, dropout_rate=self.HP.dropout_rate,
+                           num_hidden_layers=self.HP.d)
+            
+            # توجه
+            R, A = attention(K, V, Q, self.HP.d)
+            
+            # دیکودر صوت
+            logits, Y = audiodecoder(R, dropout_rate=self.HP.dropout_rate,
+                                   num_hidden_layers=self.HP.d,
+                                   num_mels=self.HP.n_mels)
+            
+            return logits, Y, A
+            
+        elif self.mode == 'training_superresolution':
+            mels, mags = inputs
+            # شبکه سوپر رزولوشن
+            logits, Z = super_resolution(mels, dropout_rate=self.HP.dropout_rate,
+                                       num_hidden_layers=self.HP.c,
+                                       n_fft=self.HP.n_fft)
+            return logits, Z
+            
+        elif self.mode == 'demo':
+            text_ids, prev_mels = inputs
+            # پیش‌پردازش ورودی‌ها
+            embedded_text = self.embedding_layer(text_ids)
+            
+            # کدگذاری متن
+            K, V = textencoder(embedded_text, dropout_rate=self.HP.dropout_rate,
+                             num_hidden_layers=self.HP.d)
+            
+            # کدگذاری صوت
+            Q = audioencoder(prev_mels, dropout_rate=self.HP.dropout_rate,
+                           num_hidden_layers=self.HP.d)
+            
+            # توجه
+            R, A = attention(K, V, Q, self.HP.d)
+            
+            # دیکودر صوت
+            logits, Y = audiodecoder(R, dropout_rate=self.HP.dropout_rate,
+                                   num_hidden_layers=self.HP.d,
+                                   num_mels=self.HP.n_mels)
+            
+            # سوپر رزولوشن
+            mag_logits, Z = super_resolution(Y, dropout_rate=self.HP.dropout_rate,
+                                           num_hidden_layers=self.HP.c,
+                                           n_fft=self.HP.n_fft)
+            
+            return Y, Z, A
 
-            with tf.name_scope("Attention"):
-                 self.R, self.A = attention(self.K,self.V, self.Q,HP.d)
-
-            with tf.name_scope("Audio_Decoder"):
-                self.logits, self.Y = audiodecoder(self.R,dropout_rate=HP.dropout_rate,num_hidden_layers=HP.d,num_mels=HP.n_mels)
+    def train_step(self, inputs):
+        with tf.GradientTape() as tape:
+            if self.mode == 'training_text2sp':
+                logits, Y, A = self(inputs, training=True)
+                # محاسبه loss
+                l1_loss = tf.reduce_mean(tf.abs(inputs[1] - Y))
+                binary_loss = tf.reduce_mean(
+                    tf.nn.sigmoid_cross_entropy_with_logits(logits=logits, labels=inputs[1])
+                )
+                # محاسبه attention loss
+                N, T = tf.cast(tf.shape(A)[1], tf.float32), tf.cast(tf.shape(A)[2], tf.float32)
+                W = tf.fill(tf.shape(A), 0.0)
+                W = W + tf.expand_dims(tf.range(N), 1)/N - tf.expand_dims(tf.range(T), 0)/T
+                att_W = 1.0 - tf.exp(-tf.square(W)/(2*0.2)**2)
+                att_loss = tf.reduce_mean(tf.multiply(A, att_W))
+                total_loss = l1_loss + binary_loss + att_loss
                 
-        if mode=='training_superresolution' or mode=='training_text2sp':    
-            with tf.name_scope("gs"):
-                self.global_step = tf.Variable(0, name='global_step', trainable=False)
-           
-        if mode=='training_superresolution' or mode=='training_text2sp':    
-            with tf.name_scope('Loss_Operations'):
-                if mode=='training_text2sp':
-                    self.l1_distance_loss = tf.reduce_mean(tf.abs(self.mels-self.Y))
-                    self.binary_divergence_loss = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits
-                                                                (logits=self.logits, labels=self.mels))
-                    N, T = tf.cast(tf.shape(self.A)[1],tf.float32), tf.cast(tf.shape(self.A)[2],tf.float32)
-                    W = tf.fill(tf.shape(self.A),0.0) 
-                    W = W + tf.expand_dims(tf.range(N),1)/N - tf.expand_dims(tf.range(T),0)/T 
-                    self.att_W = 1.0 - tf.exp(-tf.square(W)/(2*0.2)**2) 
-                    self.loss_att = tf.reduce_mean(tf.multiply(self.A,self.att_W))
+            elif self.mode == 'training_superresolution':
+                logits, Z = self(inputs, training=True)
+                l1_loss = tf.reduce_mean(tf.abs(inputs[1] - Z))
+                binary_loss = tf.reduce_mean(
+                    tf.nn.sigmoid_cross_entropy_with_logits(logits=logits, labels=inputs[1])
+                )
+                total_loss = l1_loss + binary_loss
+        
+        # محاسبه گرادیان‌ها
+        gradients = tape.gradient(total_loss, self.trainable_variables)
+        # clip گرادیان‌ها
+        clipped_gradients = [tf.clip_by_value(grad, -1., 1.) for grad in gradients]
+        # اعمال گرادیان‌ها
+        self.optimizer.apply_gradients(zip(clipped_gradients, self.trainable_variables))
+        self.global_step.assign_add(1)
+        
+        return {'loss': total_loss}
 
-                    self.total_loss = self.l1_distance_loss + self.binary_divergence_loss + self.loss_att
-                    tf.summary.scalar('l1_distance_loss', self.l1_distance_loss)
-                    tf.summary.scalar('binary_divergence_loss', self.binary_divergence_loss)
-                    tf.summary.scalar('loss_att', self.loss_att)
-                    tf.summary.scalar('total_loss', self.total_loss)
-                    tf.summary.image('mel', tf.expand_dims(tf.transpose(self.mels[:1], [0, 2, 1]), -1))
-                    tf.summary.image('predicted_mel', tf.expand_dims(tf.transpose(self.Y[:1], [0, 2, 1]), -1))
-                    tf.summary.image('plot_attention', tf.expand_dims(tf.transpose(self.A[:1], [0, 2, 1]), -1))
-                
-                if mode=='training_superresolution':
-                    self.l1_distance_loss = tf.reduce_mean(tf.abs(self.mags-self.Z))
-                    self.binary_divergence_loss = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits
-                                                                 (logits=self.logits, labels=self.mags))
-                    self.total_loss = self.l1_distance_loss + self.binary_divergence_loss
-                    tf.summary.scalar('l1_distance_loss', self.l1_distance_loss)
-                    tf.summary.scalar('binary_divergence_loss', self.binary_divergence_loss)
-                    tf.summary.scalar('total_loss', self.total_loss)
-                    tf.summary.image('mags', tf.expand_dims(tf.transpose(self.mags[:1], [0, 2, 1]), -1))
-                    tf.summary.image('predicted_mag', tf.expand_dims(tf.transpose(self.Z[:1], [0, 2, 1]), -1))
-                    
-        if mode=='training_superresolution' or mode=='training_text2sp':    
-            with tf.name_scope('optimizer_scope'):
-                step = tf.cast(self.global_step + 1, tf.float32)
-                lr = HP.init_learinig_rate * 4000.0**0.5 * tf.minimum(step * 4000.0**-1.5, step**-0.5)
-                optimizer = tf.keras.optimizers.Adam(learning_rate=lr, beta_1=0.6, beta_2=0.95)
-                tf.summary.scalar("lr", lr)
-                
-                gradients = optimizer.get_gradients(self.total_loss)
-                clipped_gradients = [tf.clip_by_value(grad, -1., 1.) for grad in gradients]
-                self.train_operation = optimizer.apply_gradients(zip(clipped_gradients, optimizer.variables()), global_step=self.global_step)
-                
-        if mode == 'demo':
-            self.INP = tf.placeholder(tf.int32, shape=(None, None), name='input_text')
-            self.mels = tf.placeholder(tf.float32, shape=(None, None, HP.n_mels), name='input_mel')
-
-            L = embeding_layer(inputtextids=self.INP, emdeding_size=HP.embeding_num_units,
-                               vocab_size=len(HP.persianvocab), scope_name="embeding")
-
-            with tf.name_scope("Text_Encoder"):
-                K, V = textencoder(embeding_tensor=L, dropout_rate=HP.dropout_rate, num_hidden_layers=HP.d)
-
-            with tf.name_scope("Audio_Encoder"):
-                Q = audioencoder(input_tensor=self.mels, dropout_rate=HP.dropout_rate, num_hidden_layers=HP.d)
-
-            with tf.name_scope("Attention"):
-                R, A = attention(K, V, Q, HP.d)
-
-            with tf.name_scope("Audio_Decoder"):
-                Ylogit, self.Y = audiodecoder(R, dropout_rate=HP.dropout_rate, num_hidden_layers=HP.d, num_mels=HP.n_mels)
-
-            with tf.name_scope("Super_Resolution_Network"):
-                logits, self.Z = super_resolution(input_tensor=self.Y, dropout_rate=HP.dropout_rate,
-                                                  num_hidden_layers=HP.c, n_fft=HP.n_fft)
-
-            # مقداردهی اولیه قبل از restore
-            self.sess.run(tf.global_variables_initializer())
-
-            # بارگذاری چک‌پوینت‌ها با استفاده از tf.train.Saver
-            text2spec_checkpoint = tf.train.latest_checkpoint('logs/text-to-spec')
-            if text2spec_checkpoint:
-                saver1 = tf.train.Saver(var_list=tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, 
-                                                                  scope='Text_Encoder|Audio_Encoder|Audio_Decoder|embeding'))
-                saver1.restore(self.sess, text2spec_checkpoint)
-                print('text-to-spec model loaded :)')
-
-            superres_checkpoint = tf.train.latest_checkpoint('logs/super_resolution')
-            if superres_checkpoint:
-                saver2 = tf.train.Saver(var_list=tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, 
-                                                                  scope='Super_Resolution_Network'))
-                saver2.restore(self.sess, superres_checkpoint)
-                print('super-resolution model loaded :)')
-        tf.summary.merge_all()
-
-    def predict(self,lines):
+    def predict(self, lines):
         lines = [item.replace("آ","آ").replace("أ","ا").replace("ئ","ی").replace("ؤ","و") for item in lines]
-        Input_Text=load_data_synthesize(lines,HP.Max_Number_Of_Chars)
-        predicted_mel = np.zeros((Input_Text.shape[0],HP.Max_Number_Of_MelFrames,HP.n_mels)) 
-        predicted_mag = np.zeros((Input_Text.shape[0],HP.Max_Number_Of_MelFrames,HP.c+1))
+        Input_Text = load_data_synthesize(lines, self.HP.Max_Number_Of_Chars)
+        predicted_mel = np.zeros((Input_Text.shape[0], self.HP.Max_Number_Of_MelFrames, self.HP.n_mels))
+        
         print('predicting ( . •́ _ʖ •̀ .) ...')
-        for i in tqdm(range(1,HP.Max_Number_Of_MelFrames)):
+        for i in tqdm(range(1, self.HP.Max_Number_Of_MelFrames)):
             previous_slice = predicted_mel[:,:i,:]
-            model_out = self.sess.run(self.Y,{
-                          self.mels: previous_slice,self.INP: Input_Text})
-            predicted_mel[:,i,:] = model_out[:,-1,:]
-        _Z = self.sess.run(self.Z, {self.Y: predicted_mel})
+            mel_out, _, _ = self([Input_Text, previous_slice], training=False)
+            predicted_mel[:,i,:] = mel_out.numpy()[:,-1,:]
+        
+        _, predicted_mag, _ = self([Input_Text, predicted_mel], training=False)
         
         print('converting the generated spectrogram to audio ｖ(⌒ｏ⌒)ｖ♪ ...')
-        for i, mag in enumerate(_Z):
+        for i, mag in enumerate(predicted_mag.numpy()):
             wav = spectrogram2wav(mag)
-            write('generated_samples/' + "/{}.wav".format(i+1),HP.sr,wav.astype(np.float32))
+            write('generated_samples/' + "/{}.wav".format(i+1), self.HP.sr, wav.astype(np.float32))
         print('DONE!')

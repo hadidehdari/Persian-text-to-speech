@@ -1,68 +1,96 @@
-import tensorflow.compat.v1 as tf
-tf.disable_v2_behavior()
-from layers import conv1d,highwaynet
+import tensorflow as tf
+from layers import Conv1DLayer, HighwayLayer
 
-def embeding_layer(inputtextids,vocab_size,emdeding_size,scope_name,padding=False):
-    with tf.variable_scope(scope_name,reuse=None):
-        table=tf.get_variable(
-            "table",
-            shape=[vocab_size,emdeding_size],
-            dtype=tf.float32,
-            initializer=tf.truncated_normal_initializer(mean=0.0,stddev=0.1))
-        return tf.nn.embedding_lookup(table,inputtextids)
-    
-def textencoder(embeding_tensor,dropout_rate,num_hidden_layers):
-    L1=conv1d(input_tensor=embeding_tensor,filters=num_hidden_layers*2,kernel_size=1,strides=1,padding="SAME",dilation_rate=1,
-       activation=tf.nn.relu,dropout_rate=dropout_rate)
-    
-    L2=conv1d(input_tensor=L1,filters=None,kernel_size=1,strides=1,padding="SAME",dilation_rate=1,
-       activation=None,dropout_rate=dropout_rate)
-    
-    L3=highwaynet(input_tensor=L2,filters=None,kernel_size=3,
-                         strides=1,padding="SAME",dilation_rate=1,
-                         activation=None,dropout_rate=dropout_rate,scope_name="textencoder_highwaynet_Block"+str(1))
-    L4=highwaynet(input_tensor=L3,filters=None,kernel_size=3,
-                         strides=1,padding="SAME",dilation_rate=3,
-                         activation=None,dropout_rate=dropout_rate,scope_name="textencoder_highwaynet_Block"+str(2))
-    L5=highwaynet(input_tensor=L4,filters=None,kernel_size=3,
-                         strides=1,padding="SAME",dilation_rate=9,
-                         activation=None,dropout_rate=dropout_rate,scope_name="textencoder_highwaynet_Block"+str(3))
-    L6=highwaynet(input_tensor=L5,filters=None,kernel_size=3,
-                         strides=1,padding="SAME",dilation_rate=27,
-                         activation=None,dropout_rate=dropout_rate,scope_name="textencoder_highwaynet_Block"+str(4))
-    
-    L7=highwaynet(input_tensor=L6,filters=None,kernel_size=3,
-                         strides=1,padding="SAME",dilation_rate=1,
-                         activation=None,dropout_rate=dropout_rate,scope_name="textencoder_highwaynet_Block"+str(5))
-    L8=highwaynet(input_tensor=L7,filters=None,kernel_size=3,
-                         strides=1,padding="SAME",dilation_rate=3,
-                         activation=None,dropout_rate=dropout_rate,scope_name="textencoder_highwaynet_Block"+str(6))
-    L9=highwaynet(input_tensor=L8,filters=None,kernel_size=3,
-                         strides=1,padding="SAME",dilation_rate=9,
-                         activation=None,dropout_rate=dropout_rate,scope_name="textencoder_highwaynet_Block"+str(7))
-    L10=highwaynet(input_tensor=L9,filters=None,kernel_size=3,
-                         strides=1,padding="SAME",dilation_rate=27,
-                         activation=None,dropout_rate=dropout_rate,scope_name="textencoder_highwaynet_Block"+str(8))
-    
-
-
-    L11=highwaynet(input_tensor=L10,filters=None,kernel_size=3,
-                     strides=1,padding="SAME",dilation_rate=1,
-                     activation=None,dropout_rate=dropout_rate,scope_name="textencoder_highwaynet_Block"+str(9))
-
-    L12=highwaynet(input_tensor=L11,filters=None,kernel_size=3,
-                     strides=1,padding="SAME",dilation_rate=1,
-                     activation=None,dropout_rate=dropout_rate,scope_name="textencoder_highwaynet_Block"+str(10))
+class TextEncoder(tf.keras.layers.Layer):
+    def __init__(self, num_hidden_layers, dropout_rate=0.5, name="text_encoder"):
+        super().__init__(name=name)
+        self.num_hidden_layers = num_hidden_layers
+        self.dropout_rate = dropout_rate
         
+        # تعریف لایه‌های کانولوشن
+        self.conv1 = Conv1DLayer(
+            filters=num_hidden_layers*2,
+            kernel_size=1,
+            strides=1,
+            padding="SAME",
+            dilation_rate=1,
+            activation=tf.nn.relu,
+            dropout_rate=dropout_rate,
+            name="conv1"
+        )
+        
+        self.conv2 = Conv1DLayer(
+            filters=num_hidden_layers*2,
+            kernel_size=1,
+            strides=1,
+            padding="SAME",
+            dilation_rate=1,
+            activation=None,
+            dropout_rate=dropout_rate,
+            name="conv2"
+        )
+        
+        # تعریف لایه‌های highway
+        self.highway_layers = []
+        for i in range(12):
+            dilation_rate = 1 if i % 4 == 0 else (3 if i % 4 == 1 else (9 if i % 4 == 2 else 27))
+            self.highway_layers.append(
+                HighwayLayer(
+                    filters=None,
+                    kernel_size=3,
+                    strides=1,
+                    padding="SAME",
+                    dilation_rate=dilation_rate,
+                    activation=None,
+                    dropout_rate=dropout_rate,
+                    name=f"highway_{i+1}"
+                )
+            )
+        
+        # لایه‌های نرمال‌سازی و dropout
+        self.layer_norm = tf.keras.layers.LayerNormalization(axis=-1)
+        self.dropout = tf.keras.layers.Dropout(dropout_rate)
+        
+    def call(self, inputs, training=False):
+        # لایه کانولوشن اول
+        x = self.conv1(inputs, training=training)
+        
+        # لایه کانولوشن دوم
+        x = self.conv2(x, training=training)
+        
+        # لایه‌های highway
+        for highway in self.highway_layers:
+            x = highway(x, training=training)
+        
+        # تقسیم به K و V
+        K, V = tf.split(x, 2, axis=-1)
+        
+        return K, V
 
-    L13=highwaynet(input_tensor=L12,filters=None,kernel_size=1,
-                     strides=1,padding="SAME",dilation_rate=1,
-                     activation=None,dropout_rate=dropout_rate,scope_name="textencoder_highwaynet_Block"+str(11))
-    L14=highwaynet(input_tensor=L13,filters=None,kernel_size=1,
-                     strides=1,padding="SAME",dilation_rate=1,
-                     activation=None,dropout_rate=dropout_rate,scope_name="textencoder_highwaynet_Block"+str(12))
+class EmbeddingLayer(tf.keras.layers.Layer):
+    def __init__(self, vocab_size, embedding_size, name="embedding"):
+        super().__init__(name=name)
+        self.embedding = tf.keras.layers.Embedding(
+            input_dim=vocab_size,
+            output_dim=embedding_size,
+            embeddings_initializer=tf.random_normal_initializer(mean=0.0, stddev=0.1),
+            name="embedding_table"
+        )
         
-        
-    K,V=tf.split(L14,2,axis=-1)
-    return K,V
+    def call(self, inputs):
+        return self.embedding(inputs)
+
+def textencoder(embeding_tensor, dropout_rate, num_hidden_layers):
+    """
+    تابع سازگاری برای حفظ رابط قدیمی
+    """
+    encoder = TextEncoder(num_hidden_layers=num_hidden_layers, dropout_rate=dropout_rate)
+    return encoder(embeding_tensor, training=True)
+
+def embeding_layer(inputtextids, vocab_size, emdeding_size, scope_name, padding=False):
+    """
+    تابع سازگاری برای حفظ رابط قدیمی
+    """
+    embedding = EmbeddingLayer(vocab_size=vocab_size, embedding_size=emdeding_size, name=scope_name)
+    return embedding(inputtextids)
     

@@ -1,134 +1,83 @@
-import tensorflow.compat.v1 as tf
-tf.disable_v2_behavior()
-from layers import conv1d, highwaynet
+import tensorflow as tf
+from layers import Conv1DLayer, HighwayLayer
+
+class AudioEncoder(tf.keras.layers.Layer):
+    def __init__(self, num_hidden_layers, dropout_rate=0.5, name="audio_encoder"):
+        super().__init__(name=name)
+        self.num_hidden_layers = num_hidden_layers
+        self.dropout_rate = dropout_rate
+        
+        # تعریف لایه‌های کانولوشن
+        self.conv1 = Conv1DLayer(
+            filters=num_hidden_layers,
+            kernel_size=1,
+            strides=1,
+            padding="CAUSAL",
+            dilation_rate=1,
+            activation=tf.nn.relu,
+            dropout_rate=dropout_rate,
+            name="conv1"
+        )
+        
+        self.conv2 = Conv1DLayer(
+            filters=num_hidden_layers,
+            kernel_size=1,
+            strides=1,
+            padding="CAUSAL",
+            dilation_rate=1,
+            activation=tf.nn.relu,
+            dropout_rate=dropout_rate,
+            name="conv2"
+        )
+        
+        self.conv3 = Conv1DLayer(
+            filters=num_hidden_layers,
+            kernel_size=1,
+            strides=1,
+            padding="CAUSAL",
+            dilation_rate=1,
+            activation=None,
+            dropout_rate=dropout_rate,
+            name="conv3"
+        )
+        
+        # تعریف لایه‌های highway
+        self.highway_layers = []
+        for i in range(10):
+            dilation_rate = 1 if i % 4 == 0 else (3 if i % 4 == 1 else (9 if i % 4 == 2 else 27))
+            self.highway_layers.append(
+                HighwayLayer(
+                    filters=None,
+                    kernel_size=3,
+                    strides=1,
+                    padding="CAUSAL",
+                    dilation_rate=dilation_rate,
+                    activation=None,
+                    dropout_rate=dropout_rate,
+                    name=f"highway_{i+1}"
+                )
+            )
+        
+        # لایه‌های نرمال‌سازی و dropout
+        self.layer_norm = tf.keras.layers.LayerNormalization(axis=-1)
+        self.dropout = tf.keras.layers.Dropout(dropout_rate)
+        
+    def call(self, inputs, training=False):
+        # لایه‌های کانولوشن
+        x = self.conv1(inputs, training=training)
+        x = self.conv2(x, training=training)
+        x = self.conv3(x, training=training)
+        
+        # لایه‌های highway
+        for highway in self.highway_layers:
+            x = highway(x, training=training)
+        
+        return x
 
 def audioencoder(input_tensor, dropout_rate, num_hidden_layers):
-    L1 = conv1d(input_tensor=input_tensor,
-                filters=num_hidden_layers,
-                kernel_size=1,
-                strides=1,
-                padding="CAUSAL",
-                dilation_rate=1,
-                activation=tf.nn.relu,
-                dropout_rate=dropout_rate)
-    
-    L2 = conv1d(input_tensor=L1,
-                filters=None,
-                kernel_size=1,
-                strides=1,
-                padding="CAUSAL",
-                dilation_rate=1,
-                activation=tf.nn.relu,
-                dropout_rate=dropout_rate)
-    
-    L3 = conv1d(input_tensor=L2,
-                filters=None,
-                kernel_size=1,
-                strides=1,
-                padding="CAUSAL",
-                dilation_rate=1,
-                activation=None,
-                dropout_rate=dropout_rate)
-
-    L4 = highwaynet(input_tensor=L3,
-                    filters=None,
-                    kernel_size=3,
-                    strides=1,
-                    padding="CAUSAL",
-                    dilation_rate=1,
-                    activation=None,
-                    dropout_rate=dropout_rate,
-                    scope_name="audioencoder_highwaynet_Block1")
-                    
-    L5 = highwaynet(input_tensor=L4,
-                    filters=None,
-                    kernel_size=3,
-                    strides=1,
-                    padding="CAUSAL",
-                    dilation_rate=3,
-                    activation=None,
-                    dropout_rate=dropout_rate,
-                    scope_name="audioencoder_highwaynet_Block2")
-                    
-    L6 = highwaynet(input_tensor=L5,
-                    filters=None,
-                    kernel_size=3,
-                    strides=1,
-                    padding="CAUSAL",
-                    dilation_rate=9,
-                    activation=None,
-                    dropout_rate=dropout_rate,
-                    scope_name="audioencoder_highwaynet_Block3")
-                    
-    L7 = highwaynet(input_tensor=L6,
-                    filters=None,
-                    kernel_size=3,
-                    strides=1,
-                    padding="CAUSAL",
-                    dilation_rate=27,
-                    activation=None,
-                    dropout_rate=dropout_rate,
-                    scope_name="audioencoder_highwaynet_Block4")
-    
-    L8 = highwaynet(input_tensor=L7,
-                    filters=None,
-                    kernel_size=3,
-                    strides=1,
-                    padding="CAUSAL",
-                    dilation_rate=1,
-                    activation=None,
-                    dropout_rate=dropout_rate,
-                    scope_name="audioencoder_highwaynet_Block5")
-                    
-    L9 = highwaynet(input_tensor=L8,
-                    filters=None,
-                    kernel_size=3,
-                    strides=1,
-                    padding="CAUSAL",
-                    dilation_rate=3,
-                    activation=None,
-                    dropout_rate=dropout_rate,
-                    scope_name="audioencoder_highwaynet_Block6")
-                    
-    L10 = highwaynet(input_tensor=L9,
-                     filters=None,
-                     kernel_size=3,
-                     strides=1,
-                     padding="CAUSAL",
-                     dilation_rate=9,
-                     activation=None,
-                     dropout_rate=dropout_rate,
-                     scope_name="audioencoder_highwaynet_Block7")
-                     
-    L11 = highwaynet(input_tensor=L10,
-                     filters=None,
-                     kernel_size=3,
-                     strides=1,
-                     padding="CAUSAL",
-                     dilation_rate=27,
-                     activation=None,
-                     dropout_rate=dropout_rate,
-                     scope_name="audioencoder_highwaynet_Block8")
-    
-    L12 = highwaynet(input_tensor=L11,
-                     filters=None,
-                     kernel_size=3,
-                     strides=1,
-                     padding="CAUSAL",
-                     dilation_rate=3,
-                     activation=None,
-                     dropout_rate=dropout_rate,
-                     scope_name="audioencoder_highwaynet_Block9")
-                     
-    L13 = highwaynet(input_tensor=L12,
-                     filters=None,
-                     kernel_size=3,
-                     strides=1,
-                     padding="CAUSAL",
-                     dilation_rate=3,
-                     activation=None,
-                     dropout_rate=dropout_rate,
-                     scope_name="audioencoder_highwaynet_Block10")
-
-    return L13
+    """
+    تابع سازگاری برای حفظ رابط قدیمی
+    """
+    encoder = AudioEncoder(num_hidden_layers=num_hidden_layers, dropout_rate=dropout_rate)
+    return encoder(input_tensor, training=True)
     
