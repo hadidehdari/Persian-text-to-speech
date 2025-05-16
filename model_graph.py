@@ -132,10 +132,23 @@ class model(object):
             text2sp_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, 'Text_Encoder|Audio_Encoder|Audio_Decoder|embeding')
             superresolution_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, 'Super_Resolution_Network')
             
+            # مقداردهی اولیه متغیرها
+            self.sess.run(tf.global_variables_initializer())
+            
+            # بارگذاری چک‌پوینت‌ها به صورت ایمن
             checkpoint = tf.train.Checkpoint(model=self)
-            checkpoint.restore(tf.train.latest_checkpoint('logs/text-to-spec'))
-            checkpoint.restore(tf.train.latest_checkpoint('logs/super_resolution'))
-            print('model loaded :)')
+            
+            # بارگذاری چک‌پوینت text-to-spec اگر وجود داشته باشد
+            text2spec_checkpoint = tf.train.latest_checkpoint('logs/text-to-spec')
+            if text2spec_checkpoint:
+                checkpoint.restore(text2spec_checkpoint)
+                print('text-to-spec model loaded :)')
+            
+            # بارگذاری چک‌پوینت super-resolution اگر وجود داشته باشد
+            superres_checkpoint = tf.train.latest_checkpoint('logs/super_resolution')
+            if superres_checkpoint:
+                checkpoint.restore(superres_checkpoint)
+                print('super-resolution model loaded :)')
 
         tf.summary.merge_all()
 
