@@ -106,50 +106,46 @@ class model(object):
                 clipped_gradients = [tf.clip_by_value(grad, -1., 1.) for grad in gradients]
                 self.train_operation = optimizer.apply_gradients(zip(clipped_gradients, optimizer.variables()), global_step=self.global_step)
                 
-        if mode=='demo':
-            self.INP = tf.keras.Input(shape=(None,), dtype=tf.int32)
-            self.mels = tf.keras.Input(shape=(None, HP.n_mels), dtype=tf.float32)
-            
-            L = embeding_layer(inputtextids=self.INP,emdeding_size=HP.embeding_num_units,
-                             vocab_size=len(HP.persianvocab),scope_name="embeding")
-                             
+        if mode == 'demo':
+            self.INP = tf.placeholder(tf.int32, shape=(None, None), name='input_text')
+            self.mels = tf.placeholder(tf.float32, shape=(None, None, HP.n_mels), name='input_mel')
+
+            L = embeding_layer(inputtextids=self.INP, emdeding_size=HP.embeding_num_units,
+                               vocab_size=len(HP.persianvocab), scope_name="embeding")
+
             with tf.name_scope("Text_Encoder"):
-                K,V = textencoder(embeding_tensor=L,dropout_rate=HP.dropout_rate,num_hidden_layers=HP.d)
-                
+                K, V = textencoder(embeding_tensor=L, dropout_rate=HP.dropout_rate, num_hidden_layers=HP.d)
+
             with tf.name_scope("Audio_Encoder"):
-                Q = audioencoder(input_tensor=self.mels,dropout_rate=HP.dropout_rate,num_hidden_layers=HP.d)
+                Q = audioencoder(input_tensor=self.mels, dropout_rate=HP.dropout_rate, num_hidden_layers=HP.d)
 
             with tf.name_scope("Attention"):
-                R,A = attention(K,V, Q,HP.d)
-                
+                R, A = attention(K, V, Q, HP.d)
+
             with tf.name_scope("Audio_Decoder"):
-                Ylogit, self.Y = audiodecoder(R,dropout_rate=HP.dropout_rate ,num_hidden_layers=HP.d,num_mels=HP.n_mels) 
-                
-            with tf.name_scope('Super_Resolution_Network'):
-                logits,self.Z = super_resolution(input_tensor=self.Y ,dropout_rate=
-                                                    HP.dropout_rate,num_hidden_layers=HP.c,n_fft=HP.n_fft)
-                                                    
-            text2sp_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, 'Text_Encoder|Audio_Encoder|Audio_Decoder|embeding')
-            superresolution_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, 'Super_Resolution_Network')
-            
-            # مقداردهی اولیه متغیرها
+                Ylogit, self.Y = audiodecoder(R, dropout_rate=HP.dropout_rate, num_hidden_layers=HP.d, num_mels=HP.n_mels)
+
+            with tf.name_scope("Super_Resolution_Network"):
+                logits, self.Z = super_resolution(input_tensor=self.Y, dropout_rate=HP.dropout_rate,
+                                                  num_hidden_layers=HP.c, n_fft=HP.n_fft)
+
+            # مقداردهی اولیه قبل از restore
             self.sess.run(tf.global_variables_initializer())
-            
-            # بارگذاری چک‌پوینت‌ها به صورت ایمن
-            checkpoint = tf.train.Checkpoint(model=self)
-            
-            # بارگذاری چک‌پوینت text-to-spec اگر وجود داشته باشد
+
+            # بارگذاری چک‌پوینت‌ها با استفاده از tf.train.Saver
             text2spec_checkpoint = tf.train.latest_checkpoint('logs/text-to-spec')
             if text2spec_checkpoint:
-                checkpoint.restore(text2spec_checkpoint)
+                saver1 = tf.train.Saver(var_list=tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, 
+                                                                  scope='Text_Encoder|Audio_Encoder|Audio_Decoder|embeding'))
+                saver1.restore(self.sess, text2spec_checkpoint)
                 print('text-to-spec model loaded :)')
-            
-            # بارگذاری چک‌پوینت super-resolution اگر وجود داشته باشد
+
             superres_checkpoint = tf.train.latest_checkpoint('logs/super_resolution')
             if superres_checkpoint:
-                checkpoint.restore(superres_checkpoint)
+                saver2 = tf.train.Saver(var_list=tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, 
+                                                                  scope='Super_Resolution_Network'))
+                saver2.restore(self.sess, superres_checkpoint)
                 print('super-resolution model loaded :)')
-
         tf.summary.merge_all()
 
     def predict(self,lines):
